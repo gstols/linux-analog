@@ -369,6 +369,7 @@ int pwm_apply_might_sleep(struct pwm_device *pwm, const struct pwm_state *state)
 int pwm_apply_atomic(struct pwm_device *pwm, const struct pwm_state *state);
 int pwm_adjust_config(struct pwm_device *pwm);
 
+int pwm_get_state_hw(struct pwm_device *pwm, struct pwm_state *state);
 /**
  * pwm_config() - change a PWM device configuration
  * @pwm: PWM device
