@@ -13,11 +13,13 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/property.h>
+#include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/util_macros.h>
+#include <linux/units.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
@@ -82,6 +84,23 @@ static int ad7606_reg_access(struct iio_dev *indio_dev,
 	}
 }
 
+static int ad7606_set_sampling_freq(struct ad7606_state *st, unsigned long freq)
+{
+	struct pwm_state cnvst_pwm_state;
+
+	if (freq == 0)
+		return -EINVAL;
+
+	/*Retrieve the previous state */
+	pwm_get_state(st->cnvst_pwm, &cnvst_pwm_state);
+
+	cnvst_pwm_state.period = DIV_ROUND_UP_ULL(NSEC_PER_SEC, freq);
+	cnvst_pwm_state.duty_cycle = cnvst_pwm_state.period / 2;
+	cnvst_pwm_state.polarity = PWM_POLARITY_NORMAL;
+
+	return pwm_apply_atomic(st->cnvst_pwm, &cnvst_pwm_state);
+}
+
 static int ad7606_read_samples(struct ad7606_state *st)
 {
 	unsigned int num = st->chip_info->num_channels - 1;
@@ -141,9 +160,20 @@ error_ret:
 static int ad7606_scan_direct(struct iio_dev *indio_dev, unsigned int ch)
 {
 	struct ad7606_state *st = iio_priv(indio_dev);
+	struct pwm_state cnvst_pwm_state;
 	int ret;
+	bool pwm_runs = false;
 
-	gpiod_set_value(st->gpio_convst, 1);
+	if (st->gpio_convst) {
+		gpiod_set_value(st->gpio_convst, 1);
+	} else {
+		pwm_get_state(st->cnvst_pwm, &cnvst_pwm_state);
+		/* Keep the current PWM state to switch it back off if needed*/
+		if (cnvst_pwm_state.enabled)
+			pwm_runs = true;
+		else
+			pwm_enable(st->cnvst_pwm);
+	}
 	ret = wait_for_completion_timeout(&st->completion,
 					  msecs_to_jiffies(1000));
 	if (!ret) {
@@ -157,6 +187,8 @@ static int ad7606_scan_direct(struct iio_dev *indio_dev, unsigned int ch)
 
 error_ret:
 	gpiod_set_value(st->gpio_convst, 0);
+	if (!pwm_runs)
+		pwm_disable(st->cnvst_pwm);
 
 	return ret;
 }
@@ -169,6 +201,7 @@ static int ad7606_read_raw(struct iio_dev *indio_dev,
 {
 	int ret, ch = 0;
 	struct ad7606_state *st = iio_priv(indio_dev);
+	struct pwm_state cnvst_pwm_state;
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
@@ -188,6 +221,11 @@ static int ad7606_read_raw(struct iio_dev *indio_dev,
 		return IIO_VAL_INT_PLUS_MICRO;
 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
 		*val = st->oversampling;
+		return IIO_VAL_INT;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		pwm_get_state(st->cnvst_pwm, &cnvst_pwm_state);
+		*val = cnvst_pwm_state.period ?
+			DIV_ROUND_CLOSEST_ULL(NSEC_PER_SEC, cnvst_pwm_state.period) : 0;
 		return IIO_VAL_INT;
 	}
 	return -EINVAL;
@@ -278,6 +316,8 @@ static int ad7606_write_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		return 0;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		return ad7606_set_sampling_freq(st, val);
 	default:
 		return -EINVAL;
 	}
@@ -419,8 +459,9 @@ static int ad7606_request_gpios(struct ad7606_state *st)
 {
 	struct device *dev = st->dev;
 
-	st->gpio_convst = devm_gpiod_get(dev, "adi,conversion-start",
-					 GPIOD_OUT_LOW);
+	st->gpio_convst = devm_gpiod_get_optional(dev, "adi,conversion-start",
+						  GPIOD_OUT_LOW);
+
 	if (IS_ERR(st->gpio_convst))
 		return PTR_ERR(st->gpio_convst);
 
@@ -489,6 +530,7 @@ static int ad7606_buffer_postenable(struct iio_dev *indio_dev)
 	struct ad7606_state *st = iio_priv(indio_dev);
 
 	gpiod_set_value(st->gpio_convst, 1);
+	pwm_enable(st->cnvst_pwm);
 
 	return 0;
 }
@@ -498,6 +540,7 @@ static int ad7606_buffer_predisable(struct iio_dev *indio_dev)
 	struct ad7606_state *st = iio_priv(indio_dev);
 
 	gpiod_set_value(st->gpio_convst, 0);
+	pwm_disable(st->cnvst_pwm);
 
 	return 0;
 }
@@ -544,6 +587,11 @@ static const struct iio_info ad7606_info_range = {
 static const struct iio_trigger_ops ad7606_trigger_ops = {
 	.validate_device = iio_trigger_validate_own_device,
 };
+
+static void ad7606_pwm_disable(void *data)
+{
+	pwm_disable(data);
+}
 
 int ad7606_probe(struct device *dev, int irq, void __iomem *base_address,
 		 const char *name, unsigned int id,
@@ -635,32 +683,45 @@ int ad7606_probe(struct device *dev, int irq, void __iomem *base_address,
 			return ret;
 	}
 
-	st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
-					  indio_dev->name,
-					  iio_device_id(indio_dev));
-	if (!st->trig)
-		return -ENOMEM;
+	/* If convst pin is not defined, setup PWM*/
+	if (!st->gpio_convst) {
+		st->cnvst_pwm = devm_pwm_get(dev, NULL);
+		if (IS_ERR(st->cnvst_pwm))
+			return PTR_ERR(st->cnvst_pwm);
+		ret = devm_add_action_or_reset(dev, ad7606_pwm_disable,
+					       st->cnvst_pwm);
+		if (ret)
+			return ret;
 
-	st->trig->ops = &ad7606_trigger_ops;
-	iio_trigger_set_drvdata(st->trig, indio_dev);
-	ret = devm_iio_trigger_register(dev, st->trig);
-	if (ret)
-		return ret;
-
-	indio_dev->trig = iio_trigger_get(st->trig);
-
+		/*
+		 * Set the sampling rate to 2000Hz so to be sure that the interruption can be
+		 * handled between within a single pulse.
+		 */
+		ad7606_set_sampling_freq(st, 2 * KILO);
+	} else {
+		st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
+						  indio_dev->name,
+						  iio_device_id(indio_dev));
+		if (!st->trig)
+			return -ENOMEM;
+		st->trig->ops = &ad7606_trigger_ops;
+		iio_trigger_set_drvdata(st->trig, indio_dev);
+		ret = devm_iio_trigger_register(dev, st->trig);
+		if (ret)
+			return ret;
+		indio_dev->trig = iio_trigger_get(st->trig);
+		ret = devm_iio_triggered_buffer_setup(dev, indio_dev,
+						      &iio_pollfunc_store_time,
+						      &ad7606_trigger_handler,
+						      &ad7606_buffer_ops);
+		if (ret)
+			return ret;
+	}
 	ret = devm_request_threaded_irq(dev, irq,
 					NULL,
 					&ad7606_interrupt,
 					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					name, indio_dev);
-	if (ret)
-		return ret;
-
-	ret = devm_iio_triggered_buffer_setup(dev, indio_dev,
-					      &iio_pollfunc_store_time,
-					      &ad7606_trigger_handler,
-					      &ad7606_buffer_ops);
 	if (ret)
 		return ret;
 
@@ -679,6 +740,7 @@ static int ad7606_suspend(struct device *dev)
 		gpiod_set_value(st->gpio_range, 1);
 		gpiod_set_value(st->gpio_standby, 1);
 	}
+	pwm_disable(st->cnvst_pwm);
 
 	return 0;
 }
@@ -693,6 +755,7 @@ static int ad7606_resume(struct device *dev)
 		gpiod_set_value(st->gpio_standby, 1);
 		ad7606_reset(st);
 	}
+	pwm_enable(st->cnvst_pwm);
 
 	return 0;
 }
