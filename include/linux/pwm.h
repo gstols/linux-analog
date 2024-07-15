@@ -50,6 +50,30 @@ enum {
 };
 
 /*
+ * struct pwm_waveform - description of a PWM waveform
+ * @period_length: PWM period
+ * @duty_length: PWM duty cycle
+ * @duty_offset: offset of the rising edge from the period's start
+ *
+ * This is a representation of a PWM waveform alternative to struct pwm_state
+ * below. It's more expressive than struct pwm_state as it contains a
+ * duty_offset and so can represent offsets other than $period - $duty_cycle
+ * which is done using .polarity = PWM_POLARITY_INVERSED. Note there is no
+ * explicit bool for enabled. A "disabled" PWM is represented by .period = 0.
+ *
+ * Note that the behaviour of a "disabled" PWM is undefined. Depending on the
+ * hardware's capabilities it might drive the active or inactive level, go
+ * high-z or even continue to toggle.
+ *
+ * The unit for all three members is nanoseconds.
+ */
+struct pwm_waveform {
+	u64 period_length;
+	u64 duty_length;
+	u64 duty_offset;
+};
+
+/*
  * struct pwm_state - state of a PWM channel
  * @period: PWM period (in nanoseconds)
  * @duty_cycle: PWM duty cycle (in nanoseconds)
@@ -259,6 +283,17 @@ struct pwm_ops {
 	void (*free)(struct pwm_chip *chip, struct pwm_device *pwm);
 	int (*capture)(struct pwm_chip *chip, struct pwm_device *pwm,
 		       struct pwm_capture *result, unsigned long timeout);
+
+	size_t sizeof_wfhw;
+	int (*round_waveform_tohw)(struct pwm_chip *chip, struct pwm_device *pwm,
+				   const struct pwm_waveform *wf, void *wfhw);
+	int (*round_waveform_fromhw)(struct pwm_chip *chip, struct pwm_device *pwm,
+				     const void *wfhw, struct pwm_waveform *wf);
+	int (*read_waveform)(struct pwm_chip *chip, struct pwm_device *pwm,
+			    void *wfhw);
+	int (*write_waveform)(struct pwm_chip *chip, struct pwm_device *pwm,
+			      const void *wfhw);
+
 	int (*apply)(struct pwm_chip *chip, struct pwm_device *pwm,
 		     const struct pwm_state *state);
 	int (*get_state)(struct pwm_chip *chip, struct pwm_device *pwm,
