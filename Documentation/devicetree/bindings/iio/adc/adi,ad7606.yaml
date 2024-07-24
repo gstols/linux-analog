@@ -114,17 +114,36 @@ properties:
       assumed that the pins are hardwired to VDD.
     type: boolean
 
+  pwms:
+    description:
+      In case the conversion is triggered by a PWM instead of a GPIO plugged to
+      the CONVST pin, the PWM must be referenced.
+    maxItems: 1
+
+  io-backends:
+    description:
+      A reference to the iio-backend, which is responsible handling the BUSY
+      pin's falling edge and communication.
+      An example of backend can be found at
+      http://analogdevicesinc.github.io/hdl/library/axi_ad7606x/index.html
+
 required:
   - compatible
-  - reg
-  - spi-cpha
   - avcc-supply
   - vdrive-supply
-  - interrupts
-  - adi,conversion-start-gpios
+
+# This checks if reg is a chipselect so the device is on an SPI
+# bus, the if-clause will fail if reg is a tuple such as for a
+# platform device.
+if:
+  properties:
+    reg:
+      minimum: 0
+      maximum: 256
+then:
+  $ref: /schemas/spi/spi-peripheral-props.yaml#
 
 allOf:
-  - $ref: /schemas/spi/spi-peripheral-props.yaml#
 
   - if:
       properties:
@@ -170,9 +189,60 @@ allOf:
         adi,conversion-start-gpios:
           maxItems: 1
 
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: adi,ad7606b
+    then:
+      oneOf:
+        - required:
+            - interrupts
+            - adi,conversion-start-gpios
+            - reg
+          properties:
+            io-backends: false
+            reg: false
+        - required:
+            - pwms
+            - io-backends
+          properties:
+            interrupts: false
+            adi,conversion-start-gpios: false
+            adi,first-data-gpios: false
+    else:
+      required:
+        - interrupts
+        - adi,conversion-start-gpios
+        - reg
+      properties:
+        io-backends: false
+        reg: false
+
 unevaluatedProperties: false
 
 examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    / {
+        adi_adc {
+                compatible = "adi,ad7606b";
+
+                pwms = <&axi_pwm_gen 0 0>;
+
+                avcc-supply = <&adc_vref>;
+                vdrive-supply = <&vdd_supply>;
+
+                reset-gpios = <&gpio0 91 GPIO_ACTIVE_HIGH>;
+                standby-gpios = <&gpio0 90 GPIO_ACTIVE_LOW>;
+                adi,range-gpios = <&gpio0 89 GPIO_ACTIVE_HIGH>;
+                adi,oversampling-ratio-gpios = <&gpio0 88 GPIO_ACTIVE_HIGH
+                                                &gpio0 87 GPIO_ACTIVE_HIGH
+                                                &gpio0 86 GPIO_ACTIVE_HIGH>;
+                io-backends = <&iio_backend>;
+        };
+    };
+
   - |
     #include <dt-bindings/gpio/gpio.h>
     #include <dt-bindings/interrupt-controller/irq.h>
