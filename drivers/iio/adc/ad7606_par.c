@@ -47,7 +47,7 @@ static const struct ad7606_bus_ops ad7606_par8_bops = {
 
 static int ad7606_par_probe(struct platform_device *pdev)
 {
-	const struct platform_device_id *id = platform_get_device_id(pdev);
+	const struct platform_device_id *id = platform_get_device_match_data(pdev);
 	struct resource *res;
 	void __iomem *addr;
 	resource_size_t remap_size;
@@ -78,12 +78,19 @@ static const struct platform_device_id ad7606_driver_ids[] = {
 };
 MODULE_DEVICE_TABLE(platform, ad7606_driver_ids);
 
+static const struct platform_device_id ad7606_driver_infos[] = {
+	[ID_AD7605_4] = { .name	= "ad7605-4", .driver_data = ID_AD7605_4, },
+	[ID_AD7606_4] = { .name	= "ad7606-4", .driver_data = ID_AD7606_4, },
+	[ID_AD7606_6] = { .name	= "ad7606-6", .driver_data = ID_AD7606_6, },
+	[ID_AD7606_8] = { .name	= "ad7606-8", .driver_data = ID_AD7606_8, },
+};
+
 static const struct of_device_id ad7606_of_match[] = {
-	{ .compatible = "adi,ad7605-4" },
-	{ .compatible = "adi,ad7606-4" },
-	{ .compatible = "adi,ad7606-6" },
-	{ .compatible = "adi,ad7606-8" },
-	{ },
+	{ .compatible = "adi,ad7605-4", .data = &ad7606_driver_infos[ID_AD7605_4] },
+	{ .compatible = "adi,ad7606-4", .data = &ad7606_driver_infos[ID_AD7606_4] },
+	{ .compatible = "adi,ad7606-6", .data = &ad7606_driver_infos[ID_AD7606_6] },
+	{ .compatible = "adi,ad7606-8", .data = &ad7606_driver_infos[ID_AD7606_8] },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ad7606_of_match);
 
