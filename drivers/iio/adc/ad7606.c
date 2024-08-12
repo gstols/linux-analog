@@ -224,6 +224,9 @@ static int ad7606_read_raw(struct iio_dev *indio_dev,
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		pwm_get_state(st->cnvst_pwm, &cnvst_pwm_state);
+		/* If the PWM is running, return the real frequency */
+		if (cnvst_pwm_state.enabled)
+			pwm_get_state_hw(st->cnvst_pwm, &cnvst_pwm_state);
 		*val = cnvst_pwm_state.period ?
 			DIV_ROUND_CLOSEST_ULL(NSEC_PER_SEC, cnvst_pwm_state.period) : 0;
 		return IIO_VAL_INT;
