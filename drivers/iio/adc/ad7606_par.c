@@ -145,17 +145,12 @@ static const struct ad7606_bus_ops ad7606_par8_bops = {
 
 static int ad7606_par_probe(struct platform_device *pdev)
 {
-	const struct platform_device_id *id;
+	const struct platform_device_id *id = platform_get_device_match_data(pdev);
 	struct resource *res;
 	void __iomem *addr;
 	resource_size_t remap_size;
 	int irq;
 	struct iio_backend *back;
-
-	if (!dev_fwnode(&pdev->dev))
-		id = platform_get_device_id(pdev);
-	else
-		id = device_get_match_data(&pdev->dev);
 
 	/*For now, only the AD7606B is backend compatible.*/
 	if (id->driver_data == ID_AD7606B) {
